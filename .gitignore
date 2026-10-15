@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+report.json
+# 以下都是 Action 运行时生成的，只发布到 GitHub Pages，不提交
+sources/
+state/
+dist/

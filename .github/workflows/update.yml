@@ -1,0 +1,132 @@
+name: 更新聚合音源
+
+# 结果只发布到 GitHub Pages，不向仓库提交任何文件
+# 首次使用：仓库 Settings → Pages → Source 选择 "GitHub Actions"
+
+on:
+  schedule:
+    - cron: '0 20 * * *'   # 每 24 小时一次（UTC 20:00 = 北京时间 04:00）
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: '上游仓库，多个用英文逗号隔开'
+        type: string
+        default: 'guoyue2010/lxmusic-'
+      race_concurrency:
+        description: '并发竞速：同时请求几个音源（1=顺序）'
+        type: string
+        default: '3'
+      timeout_ms:
+        description: '单个音源超时（毫秒）'
+        type: string
+        default: '5000'
+      default_quality:
+        description: '默认音质'
+        type: choice
+        options: ['320k', '128k', 'flac', 'flac24bit']
+        default: '320k'
+      exclude_obfuscated:
+        description: '去掉加密/混淆的 js'
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      top_per_platform:
+        description: '精简：每个平台最多保留几个音源（0=不限）'
+        type: string
+        default: '4'
+      dedup_threshold:
+        description: '去重阈值 0~1（接口域名相似度，1=不去重）'
+        type: string
+        default: '0.6'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.repository }}
+  cancel-in-progress: false
+
+# 优先级：手动启动填写的参数 > 仓库 Settings→Variables 里的同名变量 > 默认值
+env:
+  UPSTREAM:           ${{ inputs.upstream           || vars.UPSTREAM           || 'guoyue2010/lxmusic-' }}
+  RACE_CONCURRENCY:   ${{ inputs.race_concurrency   || vars.RACE_CONCURRENCY   || '3' }}
+  TIMEOUT_MS:         ${{ inputs.timeout_ms         || vars.TIMEOUT_MS         || '5000' }}
+  DEFAULT_QUALITY:    ${{ inputs.default_quality    || vars.DEFAULT_QUALITY    || '320k' }}
+  EXCLUDE_OBFUSCATED: ${{ inputs.exclude_obfuscated || vars.EXCLUDE_OBFUSCATED || 'true' }}
+  TOP_PER_PLATFORM:   ${{ inputs.top_per_platform   || vars.TOP_PER_PLATFORM   || '4' }}
+  DEDUP_THRESHOLD:    ${{ inputs.dedup_threshold    || vars.DEDUP_THRESHOLD    || '0.6' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      pages_base_url: ${{ steps.pages.outputs.base_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 配置 Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: 下载上游 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get install -y -qq p7zip-full >/dev/null 2>&1 || true
+          rm -rf dist && mkdir dist
+          bash scripts/fetch-upstreams.sh
+
+      - name: 逐个测试音源
+        run: node scripts/test-sources.js sources dist/report.json
+
+      - name: 合并有效音源
+        run: node scripts/build.js sources dist/report.json dist/lx-merged.js
+
+      - name: 压缩
+        run: bash scripts/minify.sh dist/lx-merged.js dist/lx-merged.min.js
+
+      - name: 验证合集（完整版 + 压缩版）
+        run: |
+          node scripts/verify-merged.js dist/lx-merged.js
+          node scripts/verify-merged.js dist/lx-merged.min.js
+
+      - name: 生成 Pages 首页
+        run: node scripts/make-pages.js dist "${{ steps.pages.outputs.base_url }}"
+
+      - name: 上传 Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: 摘要
+        env:
+          BASE: ${{ steps.pages.outputs.base_url }}
+        run: |
+          {
+            echo "### 已发布"
+            echo "- 压缩版: $BASE/lx-merged.min.js"
+            echo "- 完整版: $BASE/lx-merged.js"
+            echo "- 报告页: $BASE/"
+            echo
+            cat dist/REPORT.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
