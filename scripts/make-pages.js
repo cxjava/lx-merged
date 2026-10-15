@@ -6,7 +6,7 @@ const path = require('path')
 const [, , dir = 'dist', base = ''] = process.argv
 const baseUrl = base.replace(/\/$/, '')
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`(.+?)`/g, '<code>$1</code>')
+const inline = s => esc(s).replace(/&lt;br&gt;/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`(.+?)`/g, '<code>$1</code>')
 
 // 极简 markdown -> html（只处理 REPORT.md 用到的：标题、列表、表格、段落）
 function md2html(md) {
@@ -22,9 +22,9 @@ function md2html(md) {
       const cells = r => r.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
       out.push('<table><thead><tr>' + cells(rows[0]).map(c => `<th>${inline(c)}</th>`).join('') + '</tr></thead><tbody>' +
         rows.slice(2).map(r => '<tr>' + cells(r).map(c => `<td>${inline(c)}</td>`).join('') + '</tr>').join('') + '</tbody></table>')
-    } else if (/^- /.test(l)) {
+    } else if (/^\s*- /.test(l)) {
       const items = []
-      while (i < lines.length && /^- /.test(lines[i])) items.push(lines[i++].slice(2))
+      while (i < lines.length && /^\s*- /.test(lines[i])) items.push(lines[i++].replace(/^(\s*)- /, (m, sp) => sp ? '└ ' : ''))
       i--
       out.push('<ul>' + items.map(x => `<li>${inline(x)}</li>`).join('') + '</ul>')
     } else if (l.trim()) out.push(`<p>${inline(l)}</p>`)
@@ -53,6 +53,8 @@ th,td{border:1px solid #ddd;padding:4px 8px;white-space:nowrap}th{background:#f6
 <p>在落雪 / 兼容 LX 自定义源的 APP 中导入下面的链接（推荐压缩版）。</p>
 <div class="card"><b>压缩版</b><code>${esc(link('lx-merged.min.js'))}</code><span>${size('lx-merged.min.js')}</span><button onclick="cp(this)">复制</button></div>
 <div class="card"><b>完整版</b><code>${esc(link('lx-merged.js'))}</code><span>${size('lx-merged.js')}</span><button onclick="cp(this)">复制</button></div>
+<div class="card"><b>调试版</b><code>${esc(link('lx-merged.debug.js'))}</code><span>${size('lx-merged.debug.js')}</span><button onclick="cp(this)">复制</button></div>
+<p style="color:#666;font-size:13px">调试版：导入后落雪会自动打开开发者工具，Console 里有每个子音源的加载、尝试、成功/失败和耗时日志；也可以输入 <code>__lxMerged</code> 查看运行状态。排查完请换回压缩版。</p>
 <p>上游：${Object.entries(upstream).map(([r, t]) => `<a href="https://github.com/${esc(r)}/releases/tag/${esc(t)}">${esc(r)}@${esc(t)}</a>`).join('，') || '-'}
 　|　<a href="report.json">report.json</a>　|　<a href="REPORT.md">REPORT.md</a></p>
 ${md2html(report)}
