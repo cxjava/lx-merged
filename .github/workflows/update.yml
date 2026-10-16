@@ -24,6 +24,11 @@ on:
         description: '竞速追加间隔（毫秒）：多久没结果就再派一个音源'
         type: string
         default: '1500'
+      cymusic_kw:
+        description: 'Cymusic 适配：识别到 Cymusic 时同时走酷我'
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
       default_quality:
         description: '默认音质'
         type: choice
@@ -56,6 +61,7 @@ env:
   RACE_CONCURRENCY:   ${{ inputs.race_concurrency   || vars.RACE_CONCURRENCY   || '3' }}
   TIMEOUT_MS:         ${{ inputs.timeout_ms         || vars.TIMEOUT_MS         || '5000' }}
   HEDGE_MS:           ${{ inputs.hedge_ms           || vars.HEDGE_MS           || '1500' }}
+  CYMUSIC_KW:         ${{ inputs.cymusic_kw         || vars.CYMUSIC_KW         || 'true' }}
   DEFAULT_QUALITY:    ${{ inputs.default_quality    || vars.DEFAULT_QUALITY    || '320k' }}
   EXCLUDE_OBFUSCATED: ${{ inputs.exclude_obfuscated || vars.EXCLUDE_OBFUSCATED || 'true' }}
   TOP_PER_PLATFORM:   ${{ inputs.top_per_platform   || vars.TOP_PER_PLATFORM   || '4' }}

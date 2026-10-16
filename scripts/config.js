@@ -7,6 +7,8 @@ module.exports = {
   TIMEOUT_MS: num(process.env.TIMEOUT_MS, 5000),
   // 竞速追加间隔：每隔多少毫秒还没结果就再派一个音源（Cymusic 只给 5 秒，不能等前面超时）
   HEDGE_MS: num(process.env.HEDGE_MS, 1500),
+  // Cymusic 适配：识别到 Cymusic（永远只发 tx）时，同时用歌名+歌手搜酷我并走 kw 子源
+  CYMUSIC_KW: bool(process.env.CYMUSIC_KW, true),
   // 是否去掉加密/混淆的 js
   EXCLUDE_OBFUSCATED: bool(process.env.EXCLUDE_OBFUSCATED, true),
   // 默认音质：测试用它；APP 没传音质时也用它

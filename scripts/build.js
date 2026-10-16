@@ -94,6 +94,7 @@ function render(debug) {
     RACE_CONCURRENCY: Math.max(1, cfg.RACE_CONCURRENCY),
     DEFAULT_QUALITY: cfg.DEFAULT_QUALITY,
     REMEMBER_LAST: cfg.REMEMBER_LAST,
+    CYMUSIC_KW: cfg.CYMUSIC_KW,
     DEBUG: debug,
   }
   return `/*!
@@ -309,6 +310,58 @@ ${modules}
     return '128k'
   }
 
+  // ---- Cymusic 适配：它永远发 source=tx，musicInfo 只有 songmid/title/singer，很多歌 QQ 上没有
+  //      识别特征：info.requestContext + musicInfo 同时有 title/artist 且 hash === songmid
+  function isCymusic(req) {
+    var info = req.info || {}, mi = info.musicInfo || {}
+    return req.source === 'tx' && !!info.requestContext && mi.title != null && mi.artist != null && mi.hash === mi.songmid
+  }
+  var kwCache = {}
+  function httpJson(url) {
+    return new Promise(function (res, rej) {
+      lxRequest(url, { method: 'GET', timeout: 4000, headers: { 'User-Agent': 'Mozilla/5.0' } }, function (err, resp, body) {
+        if (err) return rej(err)
+        if (typeof body === 'string') { try { body = JSON.parse(body.replace(/'/g, '"')) } catch (e) {} }
+        res(body)
+      })
+    })
+  }
+  function clean(s) { return String(s || '').toLowerCase().replace(/\\s|\\(.*?\\)|（.*?）|&nbsp;/g, '') }
+  // 用歌名+歌手在酷我搜索，返回落雪格式的 kw musicInfo
+  function searchKw(title, artist) {
+    var key = title + '|' + artist
+    if (kwCache[key]) return kwCache[key]
+    var url = 'http://search.kuwo.cn/r.s?all=' + encodeURIComponent(title + ' ' + artist) +
+      '&ft=music&rformat=json&encoding=utf8&rn=10&pn=0&vipver=1&client=kt&cluster=0&strategy=2012&mobi=1&show_copyright_off=1'
+    var p = httpJson(url).then(function (d) {
+      var list = (d && d.abslist) || []
+      if (!list.length) throw new Error('酷我搜索无结果')
+      var t = clean(title), a = clean(artist).split(/[、,&/]/)[0]
+      var best = list.filter(function (s) { return clean(s.SONGNAME || s.NAME) === t && clean(s.ARTIST).indexOf(a) >= 0 })[0] ||
+        list.filter(function (s) { return clean(s.SONGNAME || s.NAME) === t })[0]
+      if (!best) throw new Error('酷我没有匹配的歌曲')
+      var id = String(best.MUSICRID || best.DC_TARGETID).replace('MUSIC_', '')
+      log('酷我匹配:', title, '-', artist, '=>', best.SONGNAME, '-', best.ARTIST, id)
+      return {
+        source: 'kw', songmid: id, id: id, name: best.SONGNAME || best.NAME, singer: best.ARTIST,
+        albumName: best.ALBUM, albumId: best.ALBUMID, interval: '04:00',
+        types: [{ type: '128k' }, { type: '320k' }, { type: 'flac' }], _types: { '128k': {}, '320k': {}, flac: {} }, typeUrl: {}
+      }
+    })
+    p.catch(function () { delete kwCache[key] })
+    kwCache[key] = p
+    return p
+  }
+  // 多条路同时跑，第一个成功的赢；全部失败才失败
+  function firstOk(ps) {
+    return new Promise(function (resolve, reject) {
+      var left = ps.length, errs = []
+      ps.forEach(function (p) {
+        p.then(resolve, function (e) { errs.push(e && e.message); if (--left === 0) reject(new Error(errs.join(' || '))) })
+      })
+    })
+  }
+
   realLx.on(E.request, function (req) {
     req = req || {}
     var info = req.info || {}
@@ -324,6 +377,17 @@ ${modules}
     for (var k in info) if (!(k in r2.info)) r2.info[k] = info[k]
     var list = candidates(r2)
     log('请求', r2.source, r2.action, r2.info.type, r2.info.musicInfo.name || r2.info.musicInfo.title, '候选:', list.map(function (s) { return s.name }).join(' / '))
+    if (CONFIG.CYMUSIC_KW && r2.action === 'musicUrl' && isCymusic(req)) {
+      var mi = r2.info.musicInfo
+      log('识别为 Cymusic：tx 与 kw 同时尝试')
+      var kwPath = searchKw(mi.title || mi.name, mi.artist || mi.singer).then(function (kwInfo) {
+        var r3 = { source: 'kw', action: 'musicUrl', info: { type: r2.info.type, musicInfo: kwInfo } }
+        return race(candidates(r3), r3)
+      })
+      var paths = [kwPath]
+      if (list.length) paths.unshift(race(list, r2))
+      return firstOk(paths)
+    }
     return race(list, r2)
   })
 

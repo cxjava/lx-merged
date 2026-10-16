@@ -43,5 +43,16 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
       cyOk = true; console.log(`  ✅ ${q} ${((Date.now() - t0) / 1000).toFixed(1)}s ${String(url).slice(0, 70)}`); break
     } catch (e) { console.log(`  ❌ ${q}: ${String(e && e.message).slice(0, 150)}`) }
   }
-  process.exit(lxOk > 0 && cyOk ? 0 : 1)
+  // QQ 上没有的歌：songmid 无效，只能靠"识别 Cymusic -> 搜酷我 -> kw 子源"
+  let cyKwOk = true
+  if (cfg.CYMUSIC_KW) {
+    console.log('  [Cymusic 方式·QQ 无此歌] songmid 无效，应自动改走酷我')
+    const bad = { ...mi, id: '000000000000AA', songmid: '000000000000AA', hash: '000000000000AA' }
+    const t0 = Date.now()
+    try {
+      const url = await withTimeout(handler({ action: 'musicUrl', source: 'tx', info: { musicInfo: bad, requestContext: {}, type: '320k' } }), 5000)
+      console.log(`  ✅ ${((Date.now() - t0) / 1000).toFixed(1)}s ${String(url).slice(0, 70)}`)
+    } catch (e) { cyKwOk = false; console.log(`  ❌ ${String(e && e.message).slice(0, 200)}`) }
+  }
+  process.exit(lxOk > 0 && cyOk && cyKwOk ? 0 : 1)
 })()
