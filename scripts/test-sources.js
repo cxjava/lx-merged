@@ -1,5 +1,6 @@
 // 测试每个音源：搜索歌曲 -> 让音源取播放链接 -> 检查链接可访问
-// 每个音源分别在"桌面版"和"移动版"两种模拟环境下测试（见 lx-env.js）
+// 只有一套测试环境：真实移动端 preload（见 lx-env.js），能过的在桌面版也能用
+// QQ 用 Cymusic 的调用方式（source=tx，musicInfo 只有 songmid/name/singer），保证 Cymusic 能播
 // 用法: node scripts/test-sources.js <源目录> [报告输出路径]
 const fs = require('fs')
 const path = require('path')
@@ -8,7 +9,6 @@ const { findSong } = require('./search')
 const cfg = require('./config')
 
 const PLATFORMS = ['kw', 'kg', 'tx', 'wy', 'mg']
-const MODES = ['desktop', 'mobile']
 const KEYWORD = process.env.TEST_KEYWORD || '晴天 周杰伦'
 const PER_FILE_TIMEOUT = 120000
 const CONCURRENCY = 4
@@ -20,11 +20,11 @@ function parseMeta(code) {
 }
 
 // ---------- 子进程：在某个模式下测试单个文件 ----------
-async function runOne(file, songsFile, mode) {
+async function runOne(file, songsFile) {
   const { loadSource } = require('./lx-env')
   const songs = JSON.parse(fs.readFileSync(songsFile, 'utf8'))
   const code = fs.readFileSync(file, 'utf8')
-  const { handler, sources, initError, logs } = await loadSource(code, { mode })
+  const { handler, sources, initError, logs } = await loadSource(code, { normalizeJson: true })
   const result = { loaded: !!handler, inited: !!sources && !initError, initError, platforms: Object.keys(sources || {}), tests: {}, logs: logs.slice(0, 20) }
   if (!handler || initError) return result
   await Promise.all(PLATFORMS.map(async p => {
@@ -51,16 +51,16 @@ async function runOne(file, songsFile, mode) {
 }
 
 if (process.argv[2] === '--child') {
-  runOne(process.argv[3], process.argv[4], process.argv[5])
+  runOne(process.argv[3], process.argv[4])
     .then(r => { process.stdout.write('\n@@RESULT@@' + JSON.stringify(r)); process.exit(0) })
     .catch(e => { process.stdout.write('\n@@RESULT@@' + JSON.stringify({ loaded: false, error: String(e) })); process.exit(0) })
   return
 }
 
 // ---------- 主进程 ----------
-function child(file, songsFile, mode) {
+function child(file, songsFile) {
   return new Promise(resolve => {
-    execFile(process.execPath, [__filename, '--child', file, songsFile, mode], { timeout: PER_FILE_TIMEOUT, maxBuffer: 20 * 1024 * 1024 }, (err, stdout) => {
+    execFile(process.execPath, [__filename, '--child', file, songsFile], { timeout: PER_FILE_TIMEOUT, maxBuffer: 20 * 1024 * 1024 }, (err, stdout) => {
       const i = stdout ? stdout.lastIndexOf('@@RESULT@@') : -1
       if (i >= 0) { try { return resolve(JSON.parse(stdout.slice(i + 10))) } catch {} }
       resolve({ loaded: false, error: err ? String(err.message).slice(0, 200) : '无输出', tests: {} })
@@ -93,35 +93,27 @@ async function main() {
     console.log(`  [搜索] ${p}: ${r.song.name} - ${r.song.singer} (${r.song.songmid}) [${tag}]`)
     for (const e of r.errors) console.log(`         ${e}`)
   }
+  // QQ：按 Cymusic 的方式只给最少字段
+  if (songs.tx) {
+    const t = songs.tx
+    songs.tx = { id: t.songmid, songmid: t.songmid, title: t.name, name: t.name, singer: t.singer, artist: t.singer, source: 'tx', hash: t.songmid }
+  }
   const songsFile = path.join(require('os').tmpdir(), 'lx-test-songs.json')
   fs.writeFileSync(songsFile, JSON.stringify(songs))
 
   const report = []
-  const jobs = files.flatMap(f => MODES.map(m => [f, m]))
-  const byFile = new Map()
   let idx = 0
   await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
-    while (idx < jobs.length) {
-      const [f, mode] = jobs[idx++]
-      const r = await child(f, songsFile, mode)
-      if (!byFile.has(f)) byFile.set(f, {})
-      byFile.get(f)[mode] = r
-      const all = byFile.get(f)
-      if (!MODES.every(m => all[m])) continue
+    while (idx < files.length) {
+      const f = files[idx++]
+      const r = await child(f, songsFile)
       const code = fs.readFileSync(f, 'utf8')
       const meta = { ...parseMeta(code), size: code.length, obfuscated: cfg.isObfuscated(code, f), hosts: cfg.apiHosts(code) }
-      const d = all.desktop, m = all.mobile
-      const passed = passedOf(d), mobilePassed = passedOf(m)
-      // 顶层字段沿用桌面结果（兼容旧逻辑），移动版结果放在 mobile 下
-      const entry = {
-        file: path.relative(dir, f), ...meta, ...d,
-        passed, mobile: { ...m, passed: mobilePassed },
-        valid: passed.length > 0 || mobilePassed.length > 0,
-      }
+      const passed = passedOf(r)
+      const entry = { file: path.relative(dir, f), ...meta, ...r, passed, valid: passed.length > 0 }
       report.push(entry)
-      const err = d.initError || d.error
-      console.log(`${entry.valid ? '✅' : '❌'}${meta.obfuscated ? '[混淆]' : ''} ${entry.file}  桌面:[${passed.join(',')}] 手机:[${mobilePassed.join(',')}]` +
-        (err ? '  桌面错误: ' + String(err).slice(0, 80) : '') + (m.initError ? '  手机错误: ' + String(m.initError).slice(0, 80) : ''))
+      const err = r.initError || r.error
+      console.log(`${entry.valid ? '✅' : '❌'}${meta.obfuscated ? '[混淆]' : ''} ${entry.file}  通过:[${passed.join(',')}]` + (err ? '  错误: ' + String(err).slice(0, 80) : ''))
     }
   }))
   report.sort((a, b) => a.file.localeCompare(b.file))

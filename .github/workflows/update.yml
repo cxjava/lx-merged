@@ -20,6 +20,10 @@ on:
         description: '单个音源超时（毫秒）'
         type: string
         default: '5000'
+      hedge_ms:
+        description: '竞速追加间隔（毫秒）：多久没结果就再派一个音源'
+        type: string
+        default: '1500'
       default_quality:
         description: '默认音质'
         type: choice
@@ -51,6 +55,7 @@ env:
   UPSTREAM:           ${{ inputs.upstream           || vars.UPSTREAM           || 'guoyue2010/lxmusic-' }}
   RACE_CONCURRENCY:   ${{ inputs.race_concurrency   || vars.RACE_CONCURRENCY   || '3' }}
   TIMEOUT_MS:         ${{ inputs.timeout_ms         || vars.TIMEOUT_MS         || '5000' }}
+  HEDGE_MS:           ${{ inputs.hedge_ms           || vars.HEDGE_MS           || '1500' }}
   DEFAULT_QUALITY:    ${{ inputs.default_quality    || vars.DEFAULT_QUALITY    || '320k' }}
   EXCLUDE_OBFUSCATED: ${{ inputs.exclude_obfuscated || vars.EXCLUDE_OBFUSCATED || 'true' }}
   TOP_PER_PLATFORM:   ${{ inputs.top_per_platform   || vars.TOP_PER_PLATFORM   || '4' }}
