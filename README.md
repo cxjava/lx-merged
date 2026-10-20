@@ -35,3 +35,14 @@ node scripts/build.js sources dist/report.json dist/lx-merged.js
 bash scripts/minify.sh dist/lx-merged.js dist/lx-merged.min.js
 node scripts/verify-merged.js dist/lx-merged.min.js
 ```
+
+## search 扩展 action
+
+合集额外支持 `search`（非 LX 标准协议，LX 官方 preload 会丢弃该结果，需自己的客户端直接调用合集的 `request` handler）：
+
+```js
+handler({ source: 'kw' /* 任一子源声明了 search 的平台 */, action: 'search', info: { keyword: '晴天 周杰伦', page: 1, limit: 20 } })
+// => { list: [LX musicInfo...(含 _from 来源)], total, from: [{ name, ok, count, ms, error }] }
+```
+
+构建时自动探测各子源 inited 里声明了 search（或 musicSearch）的平台，按平台并发调用对应子源，按 `名称|歌手` 去重，命中源越多越靠前。环境变量：`SEARCH_TIMEOUT_MS`（8000）、`SEARCH_MAX_RESULTS`（50）。

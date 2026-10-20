@@ -21,6 +21,9 @@ module.exports = {
   DEDUP_THRESHOLD: num(process.env.DEDUP_THRESHOLD, 0.6),
   // 是否记住每个平台上次成功的音源，下次优先
   REMEMBER_LAST: bool(process.env.REMEMBER_LAST, true),
+  // search 扩展 action：单源超时 / 最多返回条数
+  SEARCH_TIMEOUT_MS: num(process.env.SEARCH_TIMEOUT_MS, 8000),
+  SEARCH_MAX_RESULTS: num(process.env.SEARCH_MAX_RESULTS, 50),
 }
 
 // 判断是否混淆

@@ -70,7 +70,22 @@ for (const p of TESTED) {
   }
   order[p] = chosen.map(r => r.file)
 }
-const usedFiles = new Set(Object.values(order).flat())
+// search 扩展：探测每个候选源 inited 里声明的 actions，哪个平台声明了 search/musicSearch 就挂到哪个平台，源一律保留
+const { spawnSync } = require('child_process')
+const searchFiles = new Map() // file -> { plats: { 平台: action名 } }
+for (const r of pool) {
+  const o = spawnSync(process.execPath, [path.join(__dirname, 'detect-actions.js'), path.join(srcDir, r.file)], { encoding: 'utf8', timeout: 10000 })
+  let decl = {}
+  try { decl = JSON.parse(o.stdout || '{}') } catch (e) {}
+  const plats = {}
+  for (const [p, v] of Object.entries(decl)) {
+    const acts = (v && v.actions) || []
+    const act = acts.includes('search') ? 'search' : acts.includes('musicSearch') ? 'musicSearch' : null
+    if (act) plats[p] = act
+  }
+  if (Object.keys(plats).length) { searchFiles.set(r.file, { plats }); console.log(`search: ${r.name || r.file} -> ${Object.entries(plats).map(([p, a]) => p + ':' + a).join(',')}`) }
+}
+const usedFiles = new Set([...Object.values(order).flat(), ...searchFiles.keys()])
 const picked = pool.filter(r => usedFiles.has(r.file))
   .sort((a, b) => b.passed.length - a.passed.length || a.file.localeCompare(b.file))
 for (const r of pool) if (!usedFiles.has(r.file)) reason.set(r.file, '精简（排名靠后或接口重复）')
@@ -78,6 +93,8 @@ for (const r of pool) if (!usedFiles.has(r.file)) reason.set(r.file, '精简（�
 const idxOf = new Map(picked.map((r, i) => [r.file, i]))
 const ORDER = Object.fromEntries(TESTED.map(p => [p, order[p].map(f => idxOf.get(f))]))
 const STATIC_SOURCES = TESTED.filter(p => order[p].length > 0)
+const SEARCH_SUBS = [...searchFiles].map(([f, d]) => ({ idx: idxOf.get(f), plats: d.plats }))
+const SEARCH_PLATFORMS = [...new Set(SEARCH_SUBS.flatMap(x => Object.keys(x.plats)))]
 
 // ---------- 3. 生成合集 ----------
 const modules = picked.map(r => {
@@ -95,6 +112,8 @@ function render(debug) {
     DEFAULT_QUALITY: cfg.DEFAULT_QUALITY,
     REMEMBER_LAST: cfg.REMEMBER_LAST,
     CYMUSIC_KW: cfg.CYMUSIC_KW,
+    SEARCH_TIMEOUT_MS: cfg.SEARCH_TIMEOUT_MS,
+    SEARCH_MAX_RESULTS: cfg.SEARCH_MAX_RESULTS,
     DEBUG: debug,
   }
   return `/*!
@@ -109,6 +128,8 @@ function render(debug) {
   var CONFIG = ${JSON.stringify(config)}
   var ORDER = ${JSON.stringify(ORDER)}
   var STATIC_SOURCES = ${JSON.stringify(STATIC_SOURCES)}
+  var SEARCH_SUBS = ${JSON.stringify(SEARCH_SUBS)}
+  var SEARCH_PLATFORMS = ${JSON.stringify(SEARCH_PLATFORMS)}
   var VALID_SOURCES = ['kw', 'kg', 'tx', 'wy', 'mg', 'local']
   var VALID_QUALITYS = ['128k', '320k', 'flac', 'flac24bit']
   var realG = globalThis
@@ -362,8 +383,94 @@ ${modules}
     })
   }
 
+  // ---- search 扩展 action：并发调用所有支持该平台的子源，合并去重后返回 LX musicInfo
+  //      请求: { action: 'search', source: 'kw|wy|mg|qs', info: { keyword, page, limit } }
+  //      返回: { list, total, from: [{ name, ok, count, ms, error }] }
+  function fmtInterval(v) {
+    if (v == null || v === '') return '00:00'
+    if (typeof v === 'string' && /:/.test(v)) return v
+    var n = Number(v) || 0
+    if (n > 100000) n = Math.floor(n / 1000)
+    var m = Math.floor(n / 60), s = n % 60
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s
+  }
+  function normItem(it, source) {
+    if (!it || typeof it !== 'object') return null
+    var name = String(it.name || it.title || '')
+    if (!name) return null
+    var meta = it.meta || {}
+    var mid = it.songmid != null ? it.songmid : (it.id != null ? it.id : (meta[source] && meta[source].id))
+    var id = mid == null ? '' : String(mid)
+    var img = it.img || it.pic || it.picUrl || meta.picture || ''
+    return {
+      source: source, songmid: id, id: id, name: name,
+      singer: String(it.singer || it.artist || ''),
+      albumName: String(it.albumName || it.album || ''),
+      interval: fmtInterval(it.interval != null ? it.interval : it.duration),
+      img: String(img), types: [], _types: {}, typeUrl: {}
+    }
+  }
+  function searchKey(it) { return clean(it.name) + '|' + clean(it.singer).split(/[、,&/]/)[0] }
+  function searchOne(def, source, info) {
+    var actName = def.plats[source]
+    var s = subs[def.idx]
+    var t0 = Date.now()
+    var out = { name: s ? s.name : '?', ok: false, count: 0, ms: 0, items: [] }
+    if (!s || !s.handler) { out.error = '无 handler'; return Promise.resolve(out) }
+    var kw = info.keyword
+    var arg = { keyword: kw, text: kw, keywords: kw, page: info.page, limit: info.limit, pagesize: info.limit }
+    return new Promise(function (res) {
+      var done = false
+      function end(err, r) {
+        if (done) return
+        done = true; cancel(timer)
+        out.ms = Date.now() - t0
+        if (err) { out.error = err && err.message || String(err); log('✗ search', out.name, out.error); return res(out) }
+        var list = Array.isArray(r) ? r : (r && Array.isArray(r.list) ? r.list : null)
+        if (!list) { out.error = '返回格式无效'; return res(out) }
+        list.forEach(function (it) { var n = normItem(it, source); if (n) out.items.push(n) })
+        out.ok = true; out.count = out.items.length
+        res(out)
+      }
+      var timer = later(function () { end(new Error('超时')) }, CONFIG.SEARCH_TIMEOUT_MS)
+      Promise.resolve().then(function () {
+        return s.handler({ action: actName, source: source, info: arg })
+      }).then(function (r) { end(null, r) }, function (e) { end(e || new Error('失败')) })
+    })
+  }
+  function searchAll(source, info) {
+    var kw = String(info.keyword || '').trim()
+    if (!kw) return Promise.reject(new Error('需要搜索关键词'))
+    var req = { keyword: kw, page: Number(info.page) || 1, limit: Number(info.limit) || 20 }
+    var defs = SEARCH_SUBS.filter(function (d) { return !!d.plats[source] })
+    if (!defs.length) return Promise.reject(new Error('没有支持搜索的音源: ' + source))
+    return Promise.all(defs.map(function (d) { return searchOne(d, source, req) })).then(function (outs) {
+      var map = {}, keys = []
+      outs.forEach(function (o, oi) {
+        o.items.forEach(function (it, pos) {
+          var k = searchKey(it)
+          var e = map[k]
+          if (!e) { e = map[k] = { item: it, hits: 0, rank: oi, pos: pos, from: [] }; keys.push(k) }
+          else if (!e.item.songmid && it.songmid) { it._from = e.item._from; e.item = it }
+          if (!e.item.img && it.img) e.item.img = it.img
+          e.hits++
+          if (e.from.indexOf(o.name) < 0) e.from.push(o.name)
+        })
+      })
+      var arr = keys.map(function (k) { return map[k] })
+      arr.sort(function (a, b) { return b.hits - a.hits || a.rank - b.rank || a.pos - b.pos })
+      var list = arr.slice(0, CONFIG.SEARCH_MAX_RESULTS).map(function (e) { e.item._from = e.from; return e.item })
+      var from = outs.map(function (o) { return { name: o.name, ok: o.ok, count: o.count, ms: o.ms, error: o.error } })
+      if (!list.length && !outs.some(function (o) { return o.ok })) {
+        throw new Error('搜索全部失败: ' + from.map(function (f) { return f.name + ':' + f.error }).join(' | ').slice(0, 300))
+      }
+      return { list: list, total: list.length, from: from }
+    })
+  }
+
   realLx.on(E.request, function (req) {
     req = req || {}
+    if (req.action === 'search') return searchAll(req.source, req.info || {})
     var info = req.info || {}
     // 统一请求参数：不同 APP 传的音质/字段不一样（Cymusic 永远 source=tx，音质可能是 flac/320k/128k）
     var r2 = {
@@ -401,7 +508,7 @@ ${modules}
       if (acts.length) sources.local = { name: names.local, type: 'music', actions: acts, qualitys: [] }
       return
     }
-    sources[k] = { name: names[k], type: 'music', actions: ['musicUrl'], qualitys: VALID_QUALITYS.slice() }
+    sources[k] = { name: names[k], type: 'music', actions: SEARCH_PLATFORMS.indexOf(k) >= 0 ? ['musicUrl', 'search'] : ['musicUrl'], qualitys: VALID_QUALITYS.slice() }
   })
   log('env', realLx.env, 'inited', JSON.stringify(sources))
   if (CONFIG.DEBUG) { try { realG.__lxMerged = { subs: subs, lastOk: lastOk, CONFIG: CONFIG, ORDER: ORDER, sources: sources } } catch (e) {} }
